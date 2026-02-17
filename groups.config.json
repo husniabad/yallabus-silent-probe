@@ -1,0 +1,19 @@
+{
+    "groups": {
+        "123456789@g.us": {
+            "name": "Sana'a Drivers",
+            "operator_id": "OP_SANAA_01"
+        },
+        "987654321@g.us": {
+            "name": "Aden Drivers",
+            "operator_id": "OP_ADEN_01"
+        },
+        "120363406807462364@g.us": {
+            "name": "Yilla Bus",
+            "operator_id": "OP_YILLA_01"
+        }
+    },
+    "default": {
+        "operator_id": "OP_GENERAL"
+    }
+}
