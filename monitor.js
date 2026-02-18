@@ -410,7 +410,7 @@ async function connectToWhatsApp() {
             }
 
             // FILTER 4: Reject Saudi/Foreign city mentions (save LLM calls)
-            const SAUDI_REGEX = /(?:الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|حائل|الجبيل|القصيم|بريدة)/;
+            const SAUDI_REGEX = /(?:الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|شرورة|شروره|حائل|الجبيل|القصيم|بريدة)/;
             if (text.match(SAUDI_REGEX)) {
                 console.log(`⚠️  Skipping: Saudi/foreign city detected in message.`);
                 continue;
