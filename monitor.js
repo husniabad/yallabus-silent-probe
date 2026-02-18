@@ -10,13 +10,18 @@ const fs = require('fs');
 
 // Configuration
 const MISHWARI_API = process.env.MISHWARI_API_URL || 'http://localhost:8000/api/fleet-manager/shadow-trips/';
-let GROUP_CONFIG = {};
-
+// Load Specific Group Routing from ENV
+let GROUP_ROUTING = {};
 try {
-    GROUP_CONFIG = JSON.parse(fs.readFileSync('groups.config.json', 'utf8'));
+    const rawRouting = process.env.GROUP_ROUTING_JSON;
+    if (rawRouting) {
+        // Handle single-quotes in env if present
+        let cleanRouting = rawRouting.replace(/^'|'$/g, "");
+        GROUP_ROUTING = JSON.parse(cleanRouting);
+        console.log(`📋 Loaded specific routing rules for ${Object.keys(GROUP_ROUTING).length} groups.`);
+    }
 } catch (e) {
-    console.error("⚠️  Could not load groups.config.json. Using default fallback.");
-    GROUP_CONFIG = { groups: {}, default: { operator_id: "OP_GENERAL" } };
+    console.error("⚠️ Failed to parse GROUP_ROUTING_JSON from .env:", e.message);
 }
 
 // Check critical env
