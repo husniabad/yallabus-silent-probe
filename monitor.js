@@ -52,6 +52,59 @@ function cleanPhone(jidOrPhone) {
 
 
 
+
+// Refinement Logic
+async function refineDriverName(extractedName, senderName) {
+    extractedName = (extractedName || "").trim();
+    senderName = (senderName || "").trim();
+
+    // 1. Initial Validation (Regex)
+    // Accept if: Arabic chars + spaces, at least 2 words, doesn't start with Abu/Bu
+    const isArabic = /^[\u0600-\u06FF\s]+$/.test(extractedName);
+    const words = extractedName.split(/\s+/).filter(w => w.length > 1);
+    const hasTwoWords = words.length >= 2;
+    const startsWithAbu = /^(ابو|بو)\s+/.test(extractedName);
+
+    if (isArabic && hasTwoWords && !startsWithAbu) {
+        return extractedName; // Optimal
+    }
+
+    console.log(`🔧 Refining Name: '${extractedName}' (Sender: '${senderName}')...`);
+
+    // 2. LLM Refinement
+    const refinementPrompt = `
+    I have a potentially incomplete driver name: "${extractedName}"
+    And the Message Sender Name: "${senderName}"
+
+    Task: Generate the **Best Possible 2-Word Arabic Name** for the driver.
+    
+    Rules:
+    1. If "${extractedName}" contains a real name (e.g. "Ahmed Ali"), return it in Arabic.
+    2. If it is a nickname (starts with Abu/Bu) or empty, check "${senderName}".
+    3. If "${senderName}" is a valid 2-word name (English or Arabic), Convert it to Arabic and return it.
+    4. If you cannot find a valid 2-word name, return null.
+    
+    Output JSON ONLY: { "refined_name": "string or null" }
+    `;
+
+    try {
+        const result = await model.generateContent(refinementPrompt);
+        const response = await result.response;
+        const text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+        const json = JSON.parse(text);
+
+        if (json.refined_name) {
+            console.log(`   ✅ Refined to: ${json.refined_name}`);
+            return json.refined_name;
+        }
+    } catch (e) {
+        console.error("   ⚠️ Refinement failed, using original.");
+    }
+
+    return extractedName || null; // Fallback
+}
+
+
 async function processTripData(text, senderName, operatorId, groupId, senderRaw, defaultOrigin) {
     console.log(`📩 Valid Message from Sender: ${senderRaw}`);
     try {
@@ -90,8 +143,13 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         3. **Official List**: [صنعاء, عدن, سيئون, المكلا, عتق, الحديدة, تعز, مأرب, تريم, بيحان, الحوبان].
 
         **OTHER RULES**:
-        - **Driver Name Fallback**: If NO driver name is explicitly mentioned in the text, check the **Sender Name**. If the Sender Name is a valid, real person's name (Arabic), use it as 'driver_name'. If it is a nickname (Abu X only) or company name, DO NOT use it.
-        - **Driver Name Cleaning**: If the text contains a full name (e.g. 'Ramzi Mkaram') AND a nickname (e.g. 'Abu Hadi'), ONLY extract the full name. Exclude "Abu ..." or "Bin ..." if a real name exists.
+        **OTHER RULES**:
+        - **Driver Name**: Extract the **Real Full Name** (First + Last).
+          - MUST be **Arabic**.
+          - MUST be at least **2 words** (e.g. "محمد علي", "صالح احمد").
+          - Avoid Nicknames like "ابو محمد" (Abu Muhammad) or "بو صالح" unless no other name exists.
+          - If NO name is in text, look at **Sender Name** "${senderName}".
+        - **Driver Name Cleaning**: If text has "Ramzi Mkaram (Abu Hadi)", extract ONLY "رمزي مكارم".
         - **candidate_phones**: Extract ALL phone numbers found as an array of strings.
         - **vehicle_raw**: Extract bus type exactly as written (e.g. "نوها", "فكسي", "قبة", "باص"). 
 
@@ -124,6 +182,15 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         if (data.classification === 'invalid_ad' || data.classification === 'question') {
             console.log(`⚠️  Gemini ignored text. Classification: [${data.classification}]`);
             return; // STOP
+        }
+
+        // --- NAME REFINEMENT ---
+        data.driver_name = await refineDriverName(data.driver_name, senderName);
+
+        // If refinement failed to produce ANY name, and we requested to "fall back to case of not creating"
+        if (!data.driver_name) {
+            console.log("⚠️ No valid driver name found after refinement. Skipping.");
+            return;
         }
 
         // Apply Default Origin if missing
@@ -295,8 +362,12 @@ async function connectToWhatsApp() {
             if (!remoteJid.endsWith('@g.us')) continue;
 
             // ROUTING LOGIC
-            let routing = GROUP_CONFIG.groups[remoteJid];
-            let groupName = routing ? routing.name : "Unknown Group";
+            let routing = null;
+            let opId = GROUP_ROUTING[remoteJid];
+
+            if (opId) {
+                routing = { operator_id: opId, name: "Specific Group" };
+            }
 
             // If not explicitly defined, fallback to null/general
             if (!routing) {
@@ -352,19 +423,11 @@ async function connectToWhatsApp() {
             if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
             console.log('✅ Mishwari Silent Probe (Gemini Edition) is Online & Listening');
-            if (GROUP_CONFIG.groups) {
-                console.log(`📋 Routing rules loaded: ${Object.keys(GROUP_CONFIG.groups).length} specific groups defined.`);
+            if (Object.keys(GROUP_ROUTING).length > 0) {
+                console.log(`📋 Routing rules loaded: ${Object.keys(GROUP_ROUTING).length} specific groups defined.`);
             }
 
-            // --- LOG ALL GROUPS ---
-            console.log("\n🔍 Fetching all participating groups...");
-            const groups = await sock.groupFetchAllParticipating();
-            const groupList = Object.values(groups);
-            console.log(`📊 Found ${groupList.length} groups:`);
-            groupList.forEach(g => {
-                console.log(`   - [${g.id}] : ${g.subject}`);
-            });
-            console.log("--------------------------------------------------\n");
+            console.log('\n✅ Connected to WA Server!\n');
         }
     });
 
