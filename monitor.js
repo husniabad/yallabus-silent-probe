@@ -250,6 +250,13 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
             return; // STOP CREATION
         }
 
+        // 3. Validate cities against allowed list (must match backend stations)
+        const VALID_CITIES = ['سيئون', 'المكلا', 'عدن', 'عتق', 'بيحان', 'تريم', 'صنعاء', 'الحديدة', 'تعز', 'مأرب', 'الحوبان'];
+        if (!VALID_CITIES.includes(data.from_city) || !VALID_CITIES.includes(data.to_city)) {
+            console.log(`⚠️  Skipping: Invalid city detected. from='${data.from_city}' to='${data.to_city}'. Allowed: [${VALID_CITIES.join(', ')}]`);
+            return; // STOP CREATION
+        }
+
         // 3. Phone Logic:
         //    - Filter candidates first. If NONE valid, try sender.
         let rawCandidates = data.candidate_phones || [];
@@ -396,9 +403,16 @@ async function connectToWhatsApp() {
 
             // FILTER 3: Keyword Check (English + Arabic)
             // Arabic: صنعاء, عدن, سيئون, المكلا, بيحان, عتق, ركاب, باص, رحلة, متواجد, مسافر, متحرك, سيتحرك
-            const KEYWORD_REGEX = /(?:صنعاء|عدن|سيئون|المكلا|تريم|بيحان|عتق|ركاب|باص|رحلة|متواجد|طالع|نازل|مسافر|متحرك|سيتحرك)/i;
+            const KEYWORD_REGEX = /(?:صنعاء|عدن|سيئون|المكلا|تريم|بيحان|عتق|ركاب|باص|رحلة|متواجد|طالع|نازل|مسافر|متحرك|سيتحرك|سوف يتحرك)/i;
 
             if (!text.match(KEYWORD_REGEX)) {
+                continue;
+            }
+
+            // FILTER 4: Reject Saudi/Foreign city mentions (save LLM calls)
+            const SAUDI_REGEX = /(?:الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|حائل|الجبيل|القصيم|بريدة)/;
+            if (text.match(SAUDI_REGEX)) {
+                console.log(`⚠️  Skipping: Saudi/foreign city detected in message.`);
                 continue;
             }
 
