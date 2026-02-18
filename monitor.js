@@ -31,9 +31,23 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite", generat
 function cleanPhone(jidOrPhone) {
     if (!jidOrPhone) return null;
     if (jidOrPhone.includes('@lid')) return null;
+
     let p = jidOrPhone.split('@')[0];
-    p = p.replace(/\D/g, '');
-    return p.length >= 9 ? p : null;
+    p = p.replace(/\D/g, ''); // Remove non-digits
+
+    // Case 1: International Format 9677xxxxxxxxx
+    if (p.startsWith('967')) {
+        p = p.substring(3); // Remove 967
+    }
+
+    // Case 2: Local Format (must be 9 digits and start with 7)
+    // Valid Prefixes: 70, 71, 73, 77, 78, 79(maybe?) - Stick to 7
+    // Standard length is 9 digits (e.g. 770551092)
+    if (p.length === 9 && /^[7][01378]\d{7}$/.test(p)) {
+        return p;
+    }
+
+    return null; // Invalid or Foreign number
 }
 
 
@@ -81,7 +95,14 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         - **candidate_phones**: Extract ALL phone numbers found as an array of strings.
         - **vehicle_raw**: Extract bus type exactly as written (e.g. "نوها", "فكسي", "قبة", "باص"). 
 
+        **CLASSIFICATION RULE**:
+        First, decide if this text is a valid **TRIP ANNOUNCEMENT**.
+        - RETURNS "trip" IF: Text announces a travel trip, bus schedule, or driver seeking passengers.
+        - RETURNS "invalid_ad" IF: Text is selling products (furniture, qat, cars, items), real estate, or general spam.
+        - RETURNS "question" IF: User is asking for a trip (passenger) rather than offering one.
+
         Extract details into a JSON object:
+        - classification (string: "trip" | "invalid_ad" | "question")
         - driver_name (string or null)
         - candidate_phones (array of strings)
         - from_city (string or null, OFFICIAL name only)
@@ -98,6 +119,12 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         const response = await result.response;
         const jsonText = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
         const data = JSON.parse(jsonText);
+
+        // --- CHECK CLASSIFICATION FIRST ---
+        if (data.classification === 'invalid_ad' || data.classification === 'question') {
+            console.log(`⚠️  Gemini ignored text. Classification: [${data.classification}]`);
+            return; // STOP
+        }
 
         // Apply Default Origin if missing
         // If "From" is missing (after default check), stop creation.
@@ -152,22 +179,32 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         }
 
         // 3. Phone Logic:
-        //    - "Only pick sender number if not exists in chat"
+        //    - Filter candidates first. If NONE valid, try sender.
         let rawCandidates = data.candidate_phones || [];
+        let validCandidates = [];
 
-        if (rawCandidates.length === 0 && senderRaw) {
-            console.log("🔹 No phones in text, checking sender...");
-            rawCandidates.push(senderRaw);
-        } else if (rawCandidates.length > 0) {
-            console.log(`🔹 Found ${rawCandidates.length} phones in text. Ignoring sender phone.`);
-        }
-
-        // Validate Candidates NOW
-        const validCandidates = [];
+        // First, check text-extracted numbers
         for (const raw of new Set(rawCandidates)) {
             const cleaned = cleanPhone(raw);
             if (cleaned) validCandidates.push(cleaned);
+            else console.log(`   ⚠️ Ignoring invalid/foreign phone: ${raw}`);
         }
+
+        // If no valid numbers found in text, fallback to Sender
+        if (validCandidates.length === 0 && senderRaw) {
+            console.log("🔹 No valid Yemen phones in text, checking sender...");
+            const senderClean = cleanPhone(senderRaw);
+            if (senderClean) {
+                validCandidates.push(senderClean);
+                console.log(`   ✅ Using Sender Phone: ${senderClean}`);
+            } else {
+                console.log(`   ⚠️ Sender phone also invalid/foreign: ${senderRaw}`);
+            }
+        } else if (validCandidates.length > 0) {
+            console.log(`🔹 Found ${validCandidates.length} valid Yemen phones in text.`);
+        }
+
+        // (Validation loop moved above)
 
         if (validCandidates.length === 0) {
             console.log("⚠️  Skipping: No valid Yemen phone numbers found (Sender might be hidden/LID).");
@@ -261,9 +298,9 @@ async function connectToWhatsApp() {
             let routing = GROUP_CONFIG.groups[remoteJid];
             let groupName = routing ? routing.name : "Unknown Group";
 
-            // If not explicitly defined, fallback to default
+            // If not explicitly defined, fallback to null/general
             if (!routing) {
-                routing = GROUP_CONFIG.default || { operator_id: 'OP_GENERAL' };
+                routing = { operator_id: 'OP_GENERAL', name: 'General Group' };
             }
 
             // FILTER 2: Ignore Self & Status
@@ -277,10 +314,8 @@ async function connectToWhatsApp() {
             if (!text) continue;
 
             // FILTER 3: Keyword Check (English + Arabic)
-            // Keywords based on real samples: 
-            // English: to, from, driver, 77x, trip
             // Arabic: صنعاء, عدن, سيئون, المكلا, بيحان, عتق, ركاب, باص, رحلة, متواجد, مسافر, متحرك, سيتحرك
-            const KEYWORD_REGEX = /(?:to|from|driver|77\d{7}|trip|sana'a|aden|صنعاء|عدن|سيئون|المكلا|بيحان|عتق|ركاب|باص|رحلة|متواجد|مسافر|متحرك|سيتحرك)/i;
+            const KEYWORD_REGEX = /(?:صنعاء|عدن|سيئون|المكلا|تريم|بيحان|عتق|ركاب|باص|رحلة|متواجد|طالع|نازل|مسافر|متحرك|سيتحرك)/i;
 
             if (!text.match(KEYWORD_REGEX)) {
                 continue;
@@ -303,7 +338,7 @@ async function connectToWhatsApp() {
         }
     });
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -320,6 +355,16 @@ async function connectToWhatsApp() {
             if (GROUP_CONFIG.groups) {
                 console.log(`📋 Routing rules loaded: ${Object.keys(GROUP_CONFIG.groups).length} specific groups defined.`);
             }
+
+            // --- LOG ALL GROUPS ---
+            console.log("\n🔍 Fetching all participating groups...");
+            const groups = await sock.groupFetchAllParticipating();
+            const groupList = Object.values(groups);
+            console.log(`📊 Found ${groupList.length} groups:`);
+            groupList.forEach(g => {
+                console.log(`   - [${g.id}] : ${g.subject}`);
+            });
+            console.log("--------------------------------------------------\n");
         }
     });
 

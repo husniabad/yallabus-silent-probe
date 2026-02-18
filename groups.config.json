@@ -1,19 +1,12 @@
 {
     "groups": {
-        "123456789@g.us": {
-            "name": "Sana'a Drivers",
-            "operator_id": "OP_SANAA_01"
+        "967775396566-1552935671@g.us": {
+            "name": "مجموعه باصات محمدجيزان للرحلات 2",
+            "operator_id": "31"
         },
-        "987654321@g.us": {
-            "name": "Aden Drivers",
-            "operator_id": "OP_ADEN_01"
-        },
-        "120363406807462364@g.us": {
-            "name": "Yilla Bus",
-            "operator_id": "OP_YILLA_01"
+        "967777535611-1499542606@g.us": {
+            "name": "مجموعة باصات السياحي1",
+            "operator_id": "30"
         }
-    },
-    "default": {
-        "operator_id": "OP_GENERAL"
     }
 }
