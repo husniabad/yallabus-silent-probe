@@ -400,11 +400,11 @@ async function connectToWhatsApp() {
 
             console.log(`\n🔍 Valid Message Detected!`);
             console.log(`   - Group ID: ${remoteJid}`);
-            console.log(`   - Group Name: ${groupName}`);
+            console.log(`   - Group Name: ${routing.name}`);
             console.log(`   - Sender: ${participant}`);
             console.log("   - Message Data:", JSON.stringify(msg, null, 2));
 
-            console.log(`[Probe] Processing trip from [${groupName}] -> Assigned to: ${routing.operator_id}`);
+            console.log(`[Probe] Processing trip from [${routing.name}] -> Assigned to: ${routing.operator_id}`);
 
             console.log(`🚀 Dispatching Trip for Sender JID: ${participant}`);
 
