@@ -301,7 +301,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
             console.log(`   Trying Phone Candidate: ${finalPhone} for Driver: ${data.driver_name}`);
 
             try {
-                await axios.post(MISHWARI_API, {
+                const res = await axios.post(MISHWARI_API, {
                     ...data,
                     phone: finalPhone, // Normalized Override
                     original_text: text,
@@ -312,7 +312,12 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
                     headers: { 'X-Probe-Key': process.env.MISHWARI_API_KEY }
                 });
 
+                const resData = res.data;
                 console.log(`🚀 Uploaded to Mishwari using phone ${finalPhone}`);
+                console.log(`   ✅ Backend: ${resData.message} | Created: ${resData.created_count} | Errors: ${resData.error_count}`);
+                if (resData.trips && resData.trips.length > 0) {
+                    console.log(`   🆔 Trip ID: ${resData.trips[0].id}`);
+                }
                 success = true;
                 break; // Stop trying numbers
             } catch (apiError) {
