@@ -409,10 +409,10 @@ async function connectToWhatsApp() {
                 continue;
             }
 
-            // FILTER 4: Reject Saudi/Foreign city mentions (save LLM calls)
-            const SAUDI_REGEX = /(?:الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|شرورة|شروره|حائل|الجبيل|القصيم|بريدة)/;
-            if (text.match(SAUDI_REGEX)) {
-                console.log(`⚠️  Skipping: Saudi/foreign city detected in message.`);
+            // FILTER 4: Reject Saudi/Foreign city mentions oe selling ads (save LLM calls)
+            const SAUDI_AND_SELLING_REGEX = /(?:للبيع|للإيجار|للتأجير|عقار|شقة|أرض|وظيفة|توظيف|مطلوب موظف|مندوب|تسليم|عرض خاص|تخفيض|الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|شرورة|شروره|حائل|الجبيل|القصيم|بريدة|صلالة|صلاله|المزيونة|المزيونه|ثمريت|هيما)/;
+            if (text.match(SAUDI_AND_SELLING_REGEX)) {
+                console.log(`⚠️  Skipping: Saudi/foreign city or selling ads detected in message.`);
                 continue;
             }
 
