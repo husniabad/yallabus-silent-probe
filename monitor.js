@@ -63,7 +63,7 @@ async function refineDriverName(extractedName, senderName) {
     const isArabic = /^[\u0600-\u06FF\s]+$/.test(extractedName);
     const words = extractedName.split(/\s+/).filter(w => w.length > 1);
     const hasTwoWords = words.length >= 2;
-    const startsWithAbu = /^(ابو|بو)\s+/.test(extractedName);
+    const startsWithAbu = /^(ابو)\s+/.test(extractedName);
 
     if (isArabic && hasTwoWords && !startsWithAbu) {
         return extractedName; // Optimal
