@@ -116,20 +116,21 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         console.log(`[Gemini] Analyzing text...`);
 
         // Context for Date Resolution
-        const now = new Date();
-        const todayStr = now.toISOString().split('T')[0];
-        const dayName = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Asia/Aden' });
+        // Context for Date Resolution - STRICTLY ADEN TIME
+        function getAdenDate() {
+            const d = new Date();
+            return new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
+        }
 
-        // Time Heuristic: 
-        // During Ramadan, drivers post after Iftar/Taraweeh for the next day.
-        // Normal: if after 20:00 → Tomorrow
-        // Ramadan: if after 15:00 → Tomorrow (afternoon+ posts are for next day)
-        const timeStr = now.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Aden' });
-        const currentHour = parseInt(timeStr.split(':')[0], 10);
+        const nowAden = getAdenDate();
+        const todayStr = nowAden.toISOString().split('T')[0];
+        const dayName = nowAden.toLocaleDateString('en-US', { weekday: 'long' }); // already shifted
+        const timeStr = nowAden.toLocaleTimeString('en-US', { hour12: false }); // already shifted
+        const currentHour = nowAden.getHours();
 
         // Ramadan 2026: Feb 18 – Mar 20
-        const month = now.getMonth() + 1; // 1-indexed
-        const day = now.getDate();
+        const month = nowAden.getMonth() + 1; // 1-indexed
+        const day = nowAden.getDate();
         const isRamadan = (month === 2 && day >= 18) || (month === 3 && day <= 20);
         const lateCutoff = isRamadan ? 15 : 20;
 
@@ -257,7 +258,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
 
         // Day-of-week resolver: find next occurrence of a given day (0=Sun, 6=Sat)
         function getNextDayOfWeek(dayIndex) {
-            const d = new Date(now);
+            const d = getAdenDate(); // Use Aden time!
             const currentDay = d.getDay();
             let diff = dayIndex - currentDay;
             if (diff < 0) diff += 7;
@@ -308,6 +309,19 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         } else {
             // Missing date -> use heuristic
             data.date = defaultDateRule === 'Tomorrow' ? tomorrowStr : todayStr;
+        }
+
+        // SAFETY CHECK: If date is Today but extracted time has already passed → bump to Tomorrow
+        if (data.date === todayStr && data.time) {
+            const timeMatch = data.time.match(/^(\d{1,2}):(\d{2})$/);
+            if (timeMatch) {
+                const tripHour = parseInt(timeMatch[1], 10);
+                const tripMin = parseInt(timeMatch[2], 10);
+                if (currentHour > tripHour || (currentHour === tripHour && parseInt(timeStr.split(':')[1], 10) > tripMin)) {
+                    console.log(`🔄 Time ${data.time} already passed today (now ${timeStr}). Bumping date to Tomorrow.`);
+                    data.date = tomorrowStr;
+                }
+            }
         }
 
         // --- STRICT USER REQUIREMENT: Stop Creation Logic ---
