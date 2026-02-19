@@ -121,13 +121,20 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         const dayName = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Asia/Aden' });
 
         // Time Heuristic: 
-        // If current time is late (e.g. > 20:00), default to Tomorrow.
-        // If it's early morning (e.g. 01:00), it IS the day of the trip, so default to Today.
+        // During Ramadan, drivers post after Iftar/Taraweeh for the next day.
+        // Normal: if after 20:00 → Tomorrow
+        // Ramadan: if after 15:00 → Tomorrow (afternoon+ posts are for next day)
         const timeStr = now.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Aden' });
         const currentHour = parseInt(timeStr.split(':')[0], 10);
 
+        // Ramadan 2026: Feb 18 – Mar 20
+        const month = now.getMonth() + 1; // 1-indexed
+        const day = now.getDate();
+        const isRamadan = (month === 2 && day >= 18) || (month === 3 && day <= 20);
+        const lateCutoff = isRamadan ? 15 : 20;
+
         let defaultDateRule = "Today";
-        if (currentHour >= 20) {
+        if (currentHour >= lateCutoff) {
             defaultDateRule = "Tomorrow";
         }
 
@@ -135,6 +142,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         You are a data extraction system for a Yemeni bus company.
         Today is **${dayName}, ${todayStr}**.
         Current Time (Aden): **${timeStr}**.
+        It is currently **Ramadan** in Yemen.
         Sender Name: "**${senderName}**".
 
         Extract trip details from the text.
@@ -144,10 +152,44 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
            - "سيون" -> "سيئون"
            - "صنعا" -> "صنعاء"
            - "شبوة" -> "عتق" (or vice versa, prefer "عتق")
+           - "المكلاء" -> "المكلا"
         2. **Major City Priority**: If multiple cities are listed (e.g. "سيئون - تريم"), ONLY extract the MAJOR city ("سيئون").
-        3. **Official List**: [صنعاء, عدن, سيئون, المكلا, عتق, الحديدة, تعز, مأرب, تريم, بيحان, الحوبان].
+        3. **Official List**: [صنعاء, عدن, سيئون, المكلا, عتق, الحديدة, تعز, مأرب, تريم, بيحان, الحوبان, القطن].
 
-        **OTHER RULES**:
+        **CRITICAL RULES FOR DATE**:
+        - "بكره" / "بكرة" / "غداً" = Tomorrow
+        - "اليوم" = Today
+        - "بعد بكره" / "بعد بكرة" = Day after tomorrow
+        - If text says a DAY NAME (e.g. "الجمعه", "السبت", "الاحد"):
+          * If that day is TODAY, return "Today"
+          * If that day is TOMORROW, return "Tomorrow"
+          * Otherwise compute the YYYY-MM-DD of the NEXT occurrence of that day
+        - **SMART INFERENCE**: If the text mentions a TIME PERIOD (e.g. "صباح", "بعد الظهر", "بعد صلاة الجمعة") but NO explicit date:
+          * Compare the mentioned time with the CURRENT TIME (${timeStr}).
+          * If that time has ALREADY PASSED today, the trip is for **Tomorrow**.
+          * If that time is STILL COMING today, the trip is for **Today**.
+          * Example: If current time is 21:00 and text says "after noon" → Tomorrow.
+          * Example: If current time is 08:00 and text says "afternoon" → Today.
+        - If NO date clue at all: return null
+        - Output the date field as: "Today", "Tomorrow", "After Tomorrow", or "YYYY-MM-DD"
+
+        **CRITICAL RULES FOR TIME**:
+        - Common Arabic time references:
+          * "صباح" / "صباحاً" = "07:00"
+          * "فجر" = "05:00"
+          * "ظهر" / "بعد الظهر" = "12:00"
+          * "عصر" / "بعد العصر" = "15:00"
+          * "مساء" / "مساءً" = "18:00"
+          * "ليل" = "21:00"
+        - During Ramadan, additional time references:
+          * "بعد الإفطار" / "بعد الفطور" = "19:00"
+          * "بعد التراويح" = "21:00"
+          * "سحور" / "قبل السحور" = "03:00"
+          * "بعد صلاة الجمعة" / "بعد صلاة الجمعه" = "13:30"
+        - If an explicit clock time is mentioned (e.g. "الساعة 4", "3 عصراً"), convert to HH:MM 24h.
+        - Extract time as HH:MM (24h format) when possible.
+        - Return null ONLY if the text has absolutely NO time or period reference.
+
         **OTHER RULES**:
         - **Driver Name**: Extract the **Real Full Name** (First + Last).
           - MUST be **Arabic**.
@@ -170,8 +212,8 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         - candidate_phones (array of strings)
         - from_city (string or null, OFFICIAL name only)
         - to_city (string or null, OFFICIAL name only)
-        - date (string or null, e.g. "Tomorrow", "Friday", or YYYY-MM-DD)
-        - time (string or null, e.g. "08:00", "4 PM", "16:00")
+        - date (string or null: "Today", "Tomorrow", "After Tomorrow", or "YYYY-MM-DD")
+        - time (string or null, HH:MM 24h format e.g. "08:00", "19:00")
         - vehicle_raw (string or null)
         - price (number or null)
 
@@ -209,28 +251,63 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         const tomorrow = new Date(now);
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomorrowStr = tomorrow.toISOString().split('T')[0];
+        const afterTomorrow = new Date(now);
+        afterTomorrow.setDate(afterTomorrow.getDate() + 2);
+        const afterTomorrowStr = afterTomorrow.toISOString().split('T')[0];
+
+        // Day-of-week resolver: find next occurrence of a given day (0=Sun, 6=Sat)
+        function getNextDayOfWeek(dayIndex) {
+            const d = new Date(now);
+            const currentDay = d.getDay();
+            let diff = dayIndex - currentDay;
+            if (diff < 0) diff += 7;
+            if (diff === 0) diff = 7; // same day = next week
+            d.setDate(d.getDate() + diff);
+            return d.toISOString().split('T')[0];
+        }
+
+        // Arabic day name -> JS day index
+        const DAY_MAP = {
+            'السبت': 6, 'الاحد': 0, 'الأحد': 0,
+            'الاثنين': 1, 'الإثنين': 1, 'الثلاثاء': 2, 'الثلاثا': 2,
+            'الاربعاء': 3, 'الأربعاء': 3, 'الخميس': 4,
+            'الجمعه': 5, 'الجمعة': 5,
+            'saturday': 6, 'sunday': 0, 'monday': 1, 'tuesday': 2,
+            'wednesday': 3, 'thursday': 4, 'friday': 5,
+        };
 
         if (data.date) {
-            const lowerDate = data.date.toLowerCase();
-            const afterTomorrow = new Date(now);
-            afterTomorrow.setDate(afterTomorrow.getDate() + 2);
-            const afterTomorrowStr = afterTomorrow.toISOString().split('T')[0];
+            const lowerDate = data.date.toLowerCase().trim();
 
-            if (lowerDate.includes('tomorrow') || lowerDate.includes('ghadan') || lowerDate.includes('bukra')) {
-                data.date = tomorrowStr;
-            } else if (lowerDate.includes('today') || lowerDate.includes('alyoum')) {
-                data.date = todayStr;
-            } else if (lowerDate.includes('after') && (lowerDate.includes('tomorrow') || lowerDate.includes('bukra'))) {
+            if (lowerDate.includes('after') && lowerDate.includes('tomorrow') || lowerDate.includes('بعد بكر') || lowerDate.includes('بعد غد')) {
                 data.date = afterTomorrowStr;
-            } else if (!/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
-                // Try to keep it if it looks like a date, otherwise default
-                // Simple check: if it has digits and dashes/slashes
-                console.log(`⚠️ Date '${data.date}' not strict YYYY-MM-DD. Defaulting to Tomorrow.`);
+            } else if (lowerDate.includes('tomorrow') || lowerDate.includes('غد') || lowerDate.includes('بكر')) {
                 data.date = tomorrowStr;
+            } else if (lowerDate.includes('today') || lowerDate.includes('اليوم')) {
+                data.date = todayStr;
+            } else if (!/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+                // Check if it's a day name
+                let resolved = false;
+                for (const [dayName, dayIdx] of Object.entries(DAY_MAP)) {
+                    if (lowerDate.includes(dayName)) {
+                        // If today IS that day, use today
+                        if (now.getDay() === dayIdx) {
+                            data.date = todayStr;
+                        } else {
+                            data.date = getNextDayOfWeek(dayIdx);
+                        }
+                        resolved = true;
+                        break;
+                    }
+                }
+                if (!resolved) {
+                    console.log(`⚠️ Date '${data.date}' not resolved. Defaulting to ${defaultDateRule}.`);
+                    data.date = defaultDateRule === 'Tomorrow' ? tomorrowStr : todayStr;
+                }
             }
         } else {
-            // Missing date -> Default to Tomorrow
-            data.date = tomorrowStr;
+            // Missing date -> use heuristic
+            data.date = defaultDateRule === 'Tomorrow' ? tomorrowStr : todayStr;
         }
 
         // --- STRICT USER REQUIREMENT: Stop Creation Logic ---
@@ -251,7 +328,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         }
 
         // 3. Validate cities against allowed list (must match backend stations)
-        const VALID_CITIES = ['سيئون', 'المكلا', 'عدن', 'عتق', 'بيحان', 'تريم', 'صنعاء', 'الحديدة', 'تعز', 'مأرب', 'الحوبان'];
+        const VALID_CITIES = ['سيئون', 'المكلا', 'عدن', 'عتق', 'بيحان', 'تريم', 'صنعاء', 'الحديدة', 'تعز', 'مأرب', 'الحوبان', 'القطن'];
         if (!VALID_CITIES.includes(data.from_city) || !VALID_CITIES.includes(data.to_city)) {
             console.log(`⚠️  Skipping: Invalid city detected. from='${data.from_city}' to='${data.to_city}'. Allowed: [${VALID_CITIES.join(', ')}]`);
             return; // STOP CREATION
@@ -403,7 +480,7 @@ async function connectToWhatsApp() {
 
             // FILTER 3: Keyword Check (English + Arabic)
             // Arabic: صنعاء, عدن, سيئون, المكلا, بيحان, عتق, ركاب, باص, رحلة, متواجد, مسافر, متحرك, سيتحرك
-            const KEYWORD_REGEX = /(?:صنعاء|عدن|سيئون|المكلا|تريم|بيحان|عتق|ركاب|باص|رحلة|متواجد|طالع|نازل|مسافر|متحرك|سيتحرك|سوف يتحرك)/i;
+            const KEYWORD_REGEX = /(?:صنعاء|عدن|سيئون|المكلا|تريم|بيحان|عتق|القطن|ركاب|باص|رحلة|متواجد|طالع|نازل|مسافر|متحرك|سيتحرك|سوف يتحرك)/i;
 
             if (!text.match(KEYWORD_REGEX)) {
                 continue;
