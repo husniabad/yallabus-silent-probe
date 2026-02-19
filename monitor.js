@@ -410,7 +410,7 @@ async function connectToWhatsApp() {
             }
 
             // FILTER 4: Reject Saudi/Foreign city mentions oe selling ads (save LLM calls)
-            const SAUDI_AND_SELLING_REGEX = /(?:للبيع|للإيجار|للتأجير|عقار|شقة|أرض|وظيفة|توظيف|مطلوب موظف|مندوب|تسليم|عرض خاص|تخفيض|الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|شرورة|شروره|حائل|الجبيل|القصيم|بريدة|صلالة|صلاله|المزيونة|المزيونه|ثمريت|هيما)/;
+            const SAUDI_AND_SELLING_REGEX = /(?:للبيع|بيع|شراء|للإيجار|للتأجير|عقار|شقة|أرض|وظيفة|توظيف|مطلوب موظف|مندوب|تسليم|عرض خاص|تخفيض|الرياض|جدة|جده|مكة|مكه|الطائف|الدمام|الخبر|المدينة|المدينه|تبوك|أبها|ابها|نجران|جيزان|جازان|خميس مشيط|ينبع|شرورة|شروره|حائل|الجبيل|القصيم|بريدة|صلالة|صلاله|المزيونة|المزيونه|ثمريت|هيما)/;
             if (text.match(SAUDI_AND_SELLING_REGEX)) {
                 console.log(`⚠️  Skipping: Saudi/foreign city or selling ads detected in message.`);
                 continue;
@@ -452,6 +452,21 @@ async function connectToWhatsApp() {
             }
 
             console.log('\n✅ Connected to WA Server!\n');
+
+            // List all joined groups
+            try {
+                const groups = await sock.groupFetchAllParticipating();
+                const groupList = Object.values(groups);
+                console.log(`📋 Joined Groups (${groupList.length}):`);
+                console.log('─'.repeat(80));
+                for (const g of groupList) {
+                    const routingType = GROUP_ROUTING[g.id] ? `Specific (Op: ${GROUP_ROUTING[g.id]})` : 'General';
+                    console.log(`   ${g.subject.padEnd(40)} | ${g.id} | ${routingType}`);
+                }
+                console.log('─'.repeat(80));
+            } catch (e) {
+                console.warn('⚠️ Could not fetch group list:', e.message);
+            }
         }
     });
 
