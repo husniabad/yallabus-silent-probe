@@ -122,8 +122,15 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
             return new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
         }
 
+        function formatAdenDate(dateObj) {
+            const y = dateObj.getFullYear();
+            const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const d = String(dateObj.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+
         const nowAden = getAdenDate();
-        const todayStr = nowAden.toISOString().split('T')[0];
+        const todayStr = formatAdenDate(nowAden);
         const dayName = nowAden.toLocaleDateString('en-US', { weekday: 'long' }); // already shifted
         const timeStr = nowAden.toLocaleTimeString('en-US', { hour12: false }); // already shifted
         const currentHour = nowAden.getHours();
@@ -249,12 +256,12 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         }
 
         // --- DATE PARSING ---
-        const tomorrow = new Date(now);
+        const tomorrow = new Date(nowAden);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowStr = tomorrow.toISOString().split('T')[0];
-        const afterTomorrow = new Date(now);
+        const tomorrowStr = formatAdenDate(tomorrow);
+        const afterTomorrow = new Date(nowAden);
         afterTomorrow.setDate(afterTomorrow.getDate() + 2);
-        const afterTomorrowStr = afterTomorrow.toISOString().split('T')[0];
+        const afterTomorrowStr = formatAdenDate(afterTomorrow);
 
         // Day-of-week resolver: find next occurrence of a given day (0=Sun, 6=Sat)
         function getNextDayOfWeek(dayIndex) {
@@ -264,7 +271,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
             if (diff < 0) diff += 7;
             if (diff === 0) diff = 7; // same day = next week
             d.setDate(d.getDate() + diff);
-            return d.toISOString().split('T')[0];
+            return formatAdenDate(d);
         }
 
         // Arabic day name -> JS day index
@@ -292,7 +299,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
                 for (const [dayName, dayIdx] of Object.entries(DAY_MAP)) {
                     if (lowerDate.includes(dayName)) {
                         // If today IS that day, use today
-                        if (now.getDay() === dayIdx) {
+                        if (nowAden.getDay() === dayIdx) {
                             data.date = todayStr;
                         } else {
                             data.date = getNextDayOfWeek(dayIdx);
