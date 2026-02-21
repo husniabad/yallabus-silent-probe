@@ -11,6 +11,7 @@ const fs = require('fs');
 // Configuration
 const MISHWARI_API = process.env.MISHWARI_API_URL || 'http://localhost:8000/api/fleet-manager/shadow-trips/';
 // Load Specific Group Routing from ENV
+// FORMAT (per group value): string operator_id  OR  { operator_id, leader_phones?, default_from_city? }
 let GROUP_ROUTING = {};
 try {
     const rawRouting = process.env.GROUP_ROUTING_JSON;
@@ -22,6 +23,41 @@ try {
     }
 } catch (e) {
     console.error("⚠️ Failed to parse GROUP_ROUTING_JSON from .env:", e.message);
+}
+
+/**
+ * Resolve routing config for a group JID.
+ * Supports legacy string values (just operator_id) and new object format.
+ * Returns: { operator_id, leaderPhones: Set<string>, default_from_city }
+ */
+function resolveGroupRouting(groupId) {
+    const raw = GROUP_ROUTING[groupId];
+
+    if (!raw) {
+        // Not in routing table → general
+        return { operator_id: 'OP_GENERAL', leaderPhones: new Set(), default_from_city: null };
+    }
+
+    if (typeof raw === 'string' || typeof raw === 'number') {
+        // Legacy format: just the operator_id
+        return { operator_id: String(raw), leaderPhones: new Set(), default_from_city: null };
+    }
+
+    // Rich format: { operator_id, leader_phones?, default_from_city? }
+    const leaderPhones = new Set(
+        (raw.leader_phones || []).map(p => {
+            // Normalize leader phones same way cleanPhone does
+            const cleaned = String(p).replace(/\D/g, '');
+            if (cleaned.startsWith('967')) return cleaned.substring(3);
+            return cleaned;
+        }).filter(p => p.length > 0)
+    );
+
+    return {
+        operator_id: String(raw.operator_id || 'OP_GENERAL'),
+        leaderPhones,
+        default_from_city: raw.default_from_city || null,
+    };
 }
 
 // Check critical env
@@ -110,7 +146,7 @@ async function refineDriverName(extractedName, senderName) {
 }
 
 
-async function processTripData(text, senderName, operatorId, groupId, senderRaw, defaultOrigin) {
+async function processTripData(text, senderName, operatorId, groupId, senderRaw, defaultOrigin, leaderPhones = new Set()) {
     console.log(`📩 Valid Message from Sender: ${senderRaw}`);
     try {
         console.log(`[Gemini] Analyzing text...`);
@@ -357,6 +393,8 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
 
         // 3. Phone Logic:
         //    - Filter candidates first. If NONE valid, try sender.
+        //    - Then remove known leader/office/agent phones (per-group blocklist).
+        //    - If ALL remaining are leader phones, attempt name-only lookup on backend.
         let rawCandidates = data.candidate_phones || [];
         let validCandidates = [];
 
@@ -381,12 +419,39 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
             console.log(`🔹 Found ${validCandidates.length} valid Yemen phones in text.`);
         }
 
-        // (Validation loop moved above)
-
         if (validCandidates.length === 0) {
             console.log("⚠️  Skipping: No valid Yemen phone numbers found (Sender might be hidden/LID).");
             return;
         }
+
+        // ── LEADER PHONE FILTERING ───────────────────────────────────────────
+        // Remove known office/agent/leader phones from the candidate list.
+        // These numbers appear across many drivers and should NEVER be used
+        // as the primary driver identifier.
+        let leaderPhoneFallback = null; // set if we fall back to a leader phone
+        if (leaderPhones.size > 0) {
+            const leaderFiltered = validCandidates.filter(p => !leaderPhones.has(p));
+            const removedCount = validCandidates.length - leaderFiltered.length;
+
+            if (removedCount > 0) {
+                console.log(`🚫 Filtered out ${removedCount} known leader/agent phone(s): [${validCandidates.filter(p => leaderPhones.has(p)).join(', ')}]`);
+            }
+
+            if (leaderFiltered.length > 0) {
+                // Good: we have driver-specific numbers
+                validCandidates = leaderFiltered;
+                console.log(`✅ Driver-specific candidates after filter: [${validCandidates.join(', ')}]`);
+            } else {
+                // All phones in this message are leader/agent phones.
+                // Strategy: pick one of them as the trip anchor and create/update
+                // the driver record with the extracted driver name.
+                // The backend will bypass the name-mismatch check for this path.
+                leaderPhoneFallback = validCandidates[0]; // pick first leader phone
+                validCandidates = [leaderPhoneFallback];
+                console.log(`⚠️  All candidates are leader phones. Using leader phone fallback: ${leaderPhoneFallback} → driver: "${data.driver_name}"`);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         console.log("✅ Trip Detected & Validated:", {
             driver: data.driver_name,
@@ -402,13 +467,16 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
 
         let success = false;
 
+        // ── NORMAL PATH: Try each driver-specific phone ───────────────────────
         for (const finalPhone of validCandidates) {
-            console.log(`   Trying Phone Candidate: ${finalPhone} for Driver: ${data.driver_name}`);
+            console.log(`   Trying Phone Candidate: ${finalPhone} for Driver: ${data.driver_name}${leaderPhoneFallback ? ' [leader-phone-fallback]' : ''}`);
 
             try {
                 const res = await axios.post(MISHWARI_API, {
                     ...data,
                     phone: finalPhone, // Normalized Override
+                    // Flag for backend: skip name-mismatch check when using a shared leader phone
+                    leader_phone_fallback: leaderPhoneFallback !== null,
                     original_text: text,
                     reported_by: senderName,
                     operator_id: operatorId,
@@ -476,18 +544,14 @@ async function connectToWhatsApp() {
             // FILTER 1: Must be a Group
             if (!remoteJid.endsWith('@g.us')) continue;
 
-            // ROUTING LOGIC
-            let routing = null;
-            let opId = GROUP_ROUTING[remoteJid];
-
-            if (opId) {
-                routing = { operator_id: opId, name: "Specific Group" };
-            }
-
-            // If not explicitly defined, fallback to null/general
-            if (!routing) {
-                routing = { operator_id: 'OP_GENERAL', name: 'General Group' };
-            }
+            // ROUTING LOGIC — uses resolveGroupRouting for rich config support
+            const routingConfig = resolveGroupRouting(remoteJid);
+            const routing = {
+                operator_id: routingConfig.operator_id,
+                leaderPhones: routingConfig.leaderPhones,
+                default_from_city: routingConfig.default_from_city,
+                name: GROUP_ROUTING[remoteJid] ? "Specific Group" : "General Group",
+            };
 
             // FILTER 2: Ignore Self & Status
             if (msg.key.fromMe) continue;
@@ -525,9 +589,9 @@ async function connectToWhatsApp() {
 
             console.log(`🚀 Dispatching Trip for Sender JID: ${participant}`);
 
-            // Pass default_from_city if configured
+            // Pass default_from_city and leaderPhones if configured
             const defaultCity = routing.default_from_city || null;
-            await processTripData(text, msg.pushName || "Unknown", routing.operator_id, remoteJid, participant, defaultCity);
+            await processTripData(text, msg.pushName || "Unknown", routing.operator_id, remoteJid, participant, defaultCity, routing.leaderPhones);
         }
     });
 
