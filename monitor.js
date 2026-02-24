@@ -69,6 +69,13 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite", generationConfig: { responseMimeType: "application/json" } });
 
+// ── RECONNECTION STATE ──────────────────────────────────────────────────
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;       // Give up after 5 consecutive failures
+const INITIAL_DELAY_MS = 5000;          // Start at 5 seconds
+const COOLDOWN_MS = 30 * 60 * 1000;    // 30-minute cooldown after max retries
+// ────────────────────────────────────────────────────────────────────────
+
 function cleanPhone(jidOrPhone) {
     if (!jidOrPhone) return null;
     if (jidOrPhone.includes('@lid')) return null;
@@ -532,7 +539,6 @@ async function connectToWhatsApp() {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
-            console.log("🔍 FULL MSG:", JSON.stringify(msg, null, 2));
             const remoteJid = msg.key.remoteJid;
 
             // FIX: Prefer participantAlt (phone JID) over participant (LID)
@@ -604,10 +610,30 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed, reconnecting:', shouldReconnect);
-            if (shouldReconnect) connectToWhatsApp();
+            const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`Connection closed (status: ${statusCode}), shouldReconnect: ${shouldReconnect}`);
+
+            if (shouldReconnect) {
+                reconnectAttempts++;
+
+                if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+                    console.error(`❌ Failed to reconnect after ${MAX_RECONNECT_ATTEMPTS} attempts. Entering 30-minute cooldown...`);
+                    setTimeout(() => {
+                        console.log('⏰ Cooldown over. Resetting and trying to reconnect...');
+                        reconnectAttempts = 0;
+                        connectToWhatsApp();
+                    }, COOLDOWN_MS);
+                } else {
+                    const delay = INITIAL_DELAY_MS * Math.pow(2, reconnectAttempts - 1); // 5s, 10s, 20s, 40s, 80s
+                    console.log(`🔄 Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                    setTimeout(connectToWhatsApp, delay);
+                }
+            } else {
+                console.error('🚪 Logged out. Not reconnecting. Re-authenticate manually.');
+            }
         } else if (connection === 'open') {
+            reconnectAttempts = 0; // ← Reset on successful connection
             console.log('✅ Mishwari Silent Probe (Gemini Edition) is Online & Listening');
             if (Object.keys(GROUP_ROUTING).length > 0) {
                 console.log(`📋 Routing rules loaded: ${Object.keys(GROUP_ROUTING).length} specific groups defined.`);
