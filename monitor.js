@@ -1,4 +1,4 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, jidNormalizedUser } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, jidNormalizedUser, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const axios = require('axios');
@@ -74,6 +74,15 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;       // Give up after 5 consecutive failures
 const INITIAL_DELAY_MS = 5000;          // Start at 5 seconds
 const COOLDOWN_MS = 30 * 60 * 1000;    // 30-minute cooldown after max retries
+let pairingCodeRequested = false;       // Only request pairing code once
+let pairingPauseUntil = 0;             // Timestamp: pause reconnects while user enters code
+// ────────────────────────────────────────────────────────────────────────
+
+// ── WHATSAPP VERSION fallbacks (used if dynamic fetch fails) ────────────
+const WA_VERSION_FALLBACKS = [
+    [2, 3000, 1027934701],
+    [2, 3000, 1015901307],
+];
 // ────────────────────────────────────────────────────────────────────────
 
 function cleanPhone(jidOrPhone) {
@@ -528,12 +537,48 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
+    // Dynamically fetch the latest WA version to avoid 405 protocol rejection
+    let waVersion = WA_VERSION_FALLBACKS[0];
+    try {
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        waVersion = version;
+        console.log(`📡 WA Version: ${version.join('.')} (isLatest: ${isLatest})`);
+    } catch (e) {
+        console.warn(`⚠️ Could not fetch latest WA version, using fallback: ${waVersion.join('.')}`);
+    }
+
     const sock = makeWASocket({
+        version: waVersion,
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ["Mishwari Probe", "Chrome", "1.0.0"]
+        browser: Browsers.macOS('Chrome'),
     });
+
+    // ── PAIRING CODE AUTH (for headless GCE — replaces QR) ───────────────
+    if (!sock.authState.creds.registered && !pairingCodeRequested) {
+        pairingCodeRequested = true;
+        const phoneNumber = process.env.WA_PHONE_NUMBER;
+        if (!phoneNumber) {
+            console.error('❌ WA_PHONE_NUMBER not set in .env. Cannot request pairing code.');
+        } else {
+            console.log(`📱 Not registered. Requesting pairing code for ${phoneNumber} in 3s...`);
+            setTimeout(async () => {
+                try {
+                    const code = await sock.requestPairingCode(phoneNumber);
+                    // Pause reconnections for 2 minutes so user has time to enter the code
+                    pairingPauseUntil = Date.now() + 2 * 60 * 1000;
+                    console.log(`\n🔑 Pairing Code: ${code}`);
+                    console.log(`   → Open WhatsApp → Linked Devices → Link with Phone Number`);
+                    console.log(`   ⏳ Reconnections paused for 2 minutes. Enter the code now.\n`);
+                } catch (err) {
+                    console.error('❌ Failed to request pairing code:', err.message);
+                    pairingCodeRequested = false; // allow retry on next reconnect
+                }
+            }, 3000);
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
@@ -604,17 +649,28 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr) {
-            console.log("Generating QR Code...");
-            qrcode.generate(qr, { small: true });
-        }
-
         if (connection === 'close') {
             const statusCode = (lastDisconnect?.error)?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             console.log(`Connection closed (status: ${statusCode}), shouldReconnect: ${shouldReconnect}`);
 
             if (shouldReconnect) {
+                // 515 = stream error / normal WA reset during pairing handshake → reconnect immediately
+                if (statusCode === 515) {
+                    console.log('🔁 Stream reset (515) during login handshake. Reconnecting immediately...');
+                    pairingPauseUntil = 0; // clear pause so reconnect proceeds
+                    connectToWhatsApp();
+                    return;
+                }
+
+                // If we're waiting for the user to enter a pairing code, hold off
+                if (Date.now() < pairingPauseUntil) {
+                    const waitSec = Math.ceil((pairingPauseUntil - Date.now()) / 1000);
+                    console.log(`⏳ Pairing code pending. Reconnect paused for ${waitSec}s more. Enter the code in WhatsApp.`);
+                    setTimeout(connectToWhatsApp, pairingPauseUntil - Date.now());
+                    return;
+                }
+
                 reconnectAttempts++;
 
                 if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
