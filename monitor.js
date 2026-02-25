@@ -221,9 +221,10 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         - "اليوم" = Today
         - "بعد بكره" / "بعد بكرة" = Day after tomorrow
         - If text says a DAY NAME (e.g. "الجمعه", "السبت", "الاحد"):
-          * If that day is TODAY, return "Today"
+          * If that day is TODAY (${dayName}), return "Today"
           * If that day is TOMORROW, return "Tomorrow"
-          * Otherwise compute the YYYY-MM-DD of the NEXT occurrence of that day
+          * Otherwise return the **YYYY-MM-DD of the CLOSEST upcoming occurrence** of that day (this week, NOT next week).
+          * TODAY is ${dayName} ${todayStr}. Example: if today is Tuesday and text says "الاربعاء" (Wednesday), the answer is ${tomorrowStr} — NOT the following week.
         - **SMART INFERENCE**: If the text mentions a TIME PERIOD (e.g. "صباح", "بعد الظهر", "بعد صلاة الجمعة") but NO explicit date:
           * Compare the mentioned time with the CURRENT TIME (${timeStr}).
           * If that time has ALREADY PASSED today, the trip is for **Tomorrow**.
@@ -258,7 +259,7 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
           - If NO name is in text, look at **Sender Name** "${senderName}".
         - **Driver Name Cleaning**: If text has "Ramzi Mkaram (Abu Hadi)", extract ONLY "رمزي مكارم".
         - **candidate_phones**: Extract ALL phone numbers found as an array of strings.
-        - **vehicle_raw**: Extract bus type exactly as written (e.g. "نوها", "فكسي", "قبة", "باص"). 
+        - **vehicle_raw**: Extract bus type as a **single Arabic word**. Known types: \"نوها\", \"فكسي\", \"فهد\", \"قبة\". If \"باص\" or \"سياحي\" or \"هايس\" is mentioned, map to the closest type. If unclear or not mentioned, return \"نوها\".
 
         **CLASSIFICATION RULE**:
         First, decide if this text is a valid **TRIP ANNOUNCEMENT**.
