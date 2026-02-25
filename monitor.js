@@ -183,6 +183,9 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
 
         const nowAden = getAdenDate();
         const todayStr = formatAdenDate(nowAden);
+        const tomorrowForPrompt = new Date(nowAden);
+        tomorrowForPrompt.setDate(tomorrowForPrompt.getDate() + 1);
+        const tomorrowStr = formatAdenDate(tomorrowForPrompt);
         const dayName = nowAden.toLocaleDateString('en-US', { weekday: 'long' }); // already shifted
         const timeStr = nowAden.toLocaleTimeString('en-US', { hour12: false }); // already shifted
         const currentHour = nowAden.getHours();
@@ -309,9 +312,8 @@ async function processTripData(text, senderName, operatorId, groupId, senderRaw,
         }
 
         // --- DATE PARSING ---
-        const tomorrow = new Date(nowAden);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowStr = formatAdenDate(tomorrow);
+        // tomorrowStr already computed above for prompt
+        const tomorrow = tomorrowForPrompt;
         const afterTomorrow = new Date(nowAden);
         afterTomorrow.setDate(afterTomorrow.getDate() + 2);
         const afterTomorrowStr = formatAdenDate(afterTomorrow);
